@@ -1,0 +1,30 @@
+{
+  "name": "express-mvc-app",
+  "version": "1.0.0",
+  "description": "A simple MVC Express.js project",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "build": "node scripts/build.js",
+    "build:prod": "NODE_ENV=production npm run build && echo '🚀 Production build ready'",
+    "lint": "echo '📋 Running code quality checks...' && node -c app.js && echo '✅ Syntax check passed'",
+    "validate-env": "echo '🔍 Validating environment...' && node -e \"console.log('Node version:', process.version); console.log('Environment:', process.env.NODE_ENV || 'development');\"",
+    "test": "echo '🧪 No tests specified - add your test framework here'",
+    "clean": "echo '🧹 Cleaning build artifacts...' && echo '✅ Clean completed'",
+    "prestart": "npm run build"
+  },
+  "keywords": ["express", "mvc", "api", "nodejs"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

@@ -1,0 +1,18 @@
+# Node modules are installed via npm and should not be committed to version control.
+node_modules/
+
+# Logs and temporary files
+*.log
+temp/
+
+# Environment variables and secrets
+.env
+
+# Editor directories and files
+.idea/
+.vscode/
+
+# Build artifacts
+build-info.json
+dist/
+build/
