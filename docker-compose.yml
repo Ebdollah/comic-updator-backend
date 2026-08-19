@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  comic-updator-backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+    env_file:
+      - env.production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - comic-updator-network
+
+networks:
+  comic-updator-network:
+    driver: bridge
