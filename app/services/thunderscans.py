@@ -19,6 +19,10 @@ Strategy
    publish dates printed on the series page, which are authoritative.
 
 robots.txt here disallows only /wp-admin/, so everything below is permitted.
+
+Since August 2026 the whole origin — pages, sitemaps and cover images alike —
+sits behind a Cloudflare JS challenge, so every request goes through the shared
+`CloudflareSession` rather than a bare httpx client. See app/services/cloudflare.py.
 """
 
 import asyncio
@@ -33,6 +37,7 @@ from selectolax.parser import HTMLParser
 
 from app.core.logging import get_logger
 from app.models.vortexscans import ChapterInfo, ScrapeResult, VortexSeries
+from app.services.cloudflare import ChallengeError, thunderscans_session
 from app.services.vortexscans import normalize_title
 
 logger = get_logger(__name__)
@@ -42,7 +47,6 @@ SITEMAP_INDEX = f"{BASE_URL}/sitemap.xml"
 SERIES_SITEMAP = f"{BASE_URL}/wp-sitemap-posts-manga-1.xml"
 COLLECTION = "thunderscans_series"
 
-USER_AGENT = "ComicUpdator/0.1 (personal release tracker)"
 REQUEST_DELAY = 0.4
 SITEMAP_CONCURRENCY = 4
 CACHE_TTL = 900
@@ -167,13 +171,6 @@ class ThunderScansScraper:
         self.last_run_at: Optional[datetime] = None
         self.last_result: Optional[ScrapeResult] = None
 
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
-            follow_redirects=True,
-            timeout=httpx.Timeout(60.0),
-        )
-
     # ------------------------------------------------------------ discovery
 
     async def fetch_chapter_index(
@@ -185,20 +182,35 @@ class ThunderScansScraper:
             logger.info(f"Using cached thunder index ({age:.0f}s old)")
             return self._index
 
-        async with self._client() as client:
-            series_xml = (await client.get(SERIES_SITEMAP)).text
-            slugs: Set[str] = set()
-            for loc in _LOC_RE.findall(series_xml):
-                m = _SERIES_SLUG_RE.search(loc)
-                if m:
-                    slugs.add(html_lib.unescape(m.group(1)))
-            self._slugs = slugs
-            logger.info(f"Thunder series sitemap: {len(slugs)} series")
+        # Solve the challenge once up front so the sitemap fan-out below can
+        # share one clearance instead of racing to solve it many times over.
+        await thunderscans_session.ensure()
 
-            index_xml = (await client.get(SITEMAP_INDEX)).text
-            maps = [u for u in _LOC_RE.findall(index_xml) if "posts-post-" in u]
+        series_resp = await thunderscans_session.get(SERIES_SITEMAP)
+        series_resp.raise_for_status()
+        slugs: Set[str] = set()
+        for loc in _LOC_RE.findall(series_resp.text):
+            m = _SERIES_SLUG_RE.search(loc)
+            if m:
+                slugs.add(html_lib.unescape(m.group(1)))
+        if not slugs:
+            # A challenge page parses as "zero series" without erroring. Left
+            # unchecked that reads as a clean run that simply found nothing new,
+            # which is how a month of missing series went unnoticed before.
+            raise ChallengeError(
+                f"Series sitemap returned no slugs ({len(series_resp.text)} bytes). "
+                "The Cloudflare clearance is probably not working."
+            )
+        self._slugs = slugs
+        logger.info(f"Thunder series sitemap: {len(slugs)} series")
 
-            semaphore = asyncio.Semaphore(SITEMAP_CONCURRENCY)
+        index_resp = await thunderscans_session.get(SITEMAP_INDEX)
+        index_resp.raise_for_status()
+        maps = [u for u in _LOC_RE.findall(index_resp.text) if "posts-post-" in u]
+
+        semaphore = asyncio.Semaphore(SITEMAP_CONCURRENCY)
+
+        async with thunderscans_session.client() as client:
 
             async def fetch_one(url: str) -> str:
                 async with semaphore:
@@ -252,10 +264,9 @@ class ThunderScansScraper:
         """Scrape one series page: metadata, genres, and dated chapter rows."""
         url = f"{BASE_URL}/comics/{slug}/"
         try:
-            async with self._client() as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-        except httpx.HTTPError as e:
+            resp = await thunderscans_session.get(url)
+            resp.raise_for_status()
+        except (httpx.HTTPError, ChallengeError) as e:
             logger.error(f"Thunder series page failed for {slug}: {e}")
             return None
 
@@ -364,7 +375,8 @@ class ThunderScansScraper:
         dated = [(n, t) for n, t in chapters if t]
         if not dated:
             return None
-        exact = next((t for n, t in dated if n == "1"), None)
+        # Compared numerically, so "01" and "1.0" count as chapter 1 too.
+        exact = next((t for n, t in dated if _chapter_sort_key(n) == 1.0), None)
         if exact:
             return exact
         number, ts = min(dated, key=lambda pair: _chapter_sort_key(pair[0]))

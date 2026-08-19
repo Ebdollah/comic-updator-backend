@@ -12,9 +12,10 @@ To add a source: write its scraper module, then add one entry here.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.services import thunderscans, vortexscans
+from app.services.cloudflare import CloudflareSession, thunderscans_session
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class Source:
     collection: str
     scraper: Any
     notes: str = ""
+    # Set when the origin is behind a Cloudflare challenge, so the cover proxy
+    # knows to fetch images through a cleared session rather than plainly.
+    session: Optional[CloudflareSession] = None
 
 
 SOURCES: Dict[str, Source] = {
@@ -47,6 +51,7 @@ SOURCES: Dict[str, Source] = {
             "series tagged adult, ecchi, game, gender bender, idols, manhwa hot, "
             "mature or yuri are excluded."
         ),
+        session=thunderscans_session,
     ),
 }
 

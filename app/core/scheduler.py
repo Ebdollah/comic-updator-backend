@@ -66,7 +66,7 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
             timezone="UTC",
         ),
         id=VORTEXSCANS_JOB_ID,
-        name="Scrape vortexscans.org for new series",
+        name="Scrape every registered source for new series",
         max_instances=1,       # never overlap runs
         coalesce=True,         # if runs were missed, do one, not a backlog
         misfire_grace_time=3600,

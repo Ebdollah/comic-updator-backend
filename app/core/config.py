@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     secret_key: str = "your-secret-key-change-in-production"
     access_token_expire_minutes: int = 30
 
+    # Path to the Chrome/Chromium binary used to solve Cloudflare challenges.
+    # Empty means "let nodriver find one", which is right on a dev machine; the
+    # Docker image sets it explicitly.
+    chrome_path: str = ""
+
     # Background scheduler - runs once a day at this UTC time
     scheduler_enabled: bool = True
     scrape_cron_hour: int = 3

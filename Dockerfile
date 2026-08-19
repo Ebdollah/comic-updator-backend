@@ -10,12 +10,38 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies
+# System dependencies.
+#
+# Chromium and Xvfb are here for the Cloudflare challenge on en-thunderscans.com
+# (see app/services/cloudflare.py). The browser has to run headed - a headless
+# Chrome announces itself in its User-Agent and never clears the challenge - so
+# it needs a display, which Xvfb provides. The font and library packages are
+# what let Chromium start and render at all in a slim image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
+        chromium \
+        xvfb \
+        fonts-liberation \
+        libnss3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libxkbcommon0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libasound2 \
     && rm -rf /var/lib/apt/lists/*
+
+# CHROME_PATH feeds settings.chrome_path; DISPLAY points at the Xvfb screen
+# started by the CMD below.
+ENV CHROME_PATH=/usr/bin/chromium \
+    DISPLAY=:99
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -38,5 +64,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/api/v1/health || exit 1
 
-# Run the application
-CMD sh -c "gunicorn main:app -k uvicorn.workers.UvicornWorker -w 1 --bind 0.0.0.0:${PORT:-8000}"
+# Run the application under a virtual display, so the challenge solver has a
+# screen to open a headed Chromium on.
+CMD sh -c "xvfb-run -a --server-args='-screen 0 1280x1024x24' gunicorn main:app -k uvicorn.workers.UvicornWorker -w 1 --bind 0.0.0.0:${PORT:-8000}"

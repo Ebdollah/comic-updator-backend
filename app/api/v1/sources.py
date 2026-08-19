@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
 from app.core.logging import get_logger
@@ -69,6 +71,51 @@ async def get_source_series(source: str, slug: str) -> Dict[str, Any]:
     if doc is None:
         raise HTTPException(404, f"Series '{slug}' not found in {source}")
     return doc
+
+
+@router.get("/{source}/cover")
+async def source_cover(
+    source: str = SourcePath,
+    url: str = Query(..., description="Cover URL from a stored series of this source"),
+) -> Response:
+    """Serve a cover image through the backend.
+
+    Thunder's covers live on a Cloudflare-protected origin that answers a
+    hotlinked <img> request with a challenge page, so the browser renders a
+    broken image no matter what referrer policy it sends. The backend already
+    holds a cleared session for that origin, so it fetches the bytes and hands
+    them over same-origin.
+    """
+    src = _resolve(source)
+
+    # Only ever fetch from the source's own host: an open proxy would let any
+    # caller pull arbitrary URLs through this server.
+    host = httpx.URL(url).host or ""
+    if host != src.site and not host.endswith(f".{src.site}"):
+        raise HTTPException(400, f"URL host {host!r} does not belong to {src.site}")
+
+    try:
+        if src.session is not None:
+            response = await src.session.get(url)
+        else:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                response = await client.get(url)
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"Cover fetch failed for {url}: {e}")
+        raise HTTPException(502, f"Could not fetch cover: {e}")
+
+    content_type = response.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        raise HTTPException(502, f"Upstream returned {content_type or 'no content type'}, not an image")
+
+    return Response(
+        content=response.content,
+        media_type=content_type,
+        # Covers never change once uploaded, so let the browser and any CDN in
+        # front of this keep them for a day.
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.get("/{source}/status")

@@ -21,6 +21,8 @@ httpx==0.25.2
 
 # Scraping
 selectolax==0.3.21
+# Drives a real Chrome to clear the Cloudflare challenge on en-thunderscans.com
+nodriver==0.50.3
 
 # Background scheduling
 apscheduler==3.10.4
