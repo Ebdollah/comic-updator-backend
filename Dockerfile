@@ -15,14 +15,17 @@ WORKDIR /app
 # Chromium and Xvfb are here for the Cloudflare challenge on en-thunderscans.com
 # (see app/services/cloudflare.py). The browser has to run headed - a headless
 # Chrome announces itself in its User-Agent and never clears the challenge - so
-# it needs a display, which Xvfb provides. The font and library packages are
-# what let Chromium start and render at all in a slim image.
+# it needs a display, which Xvfb provides. xauth is separate from the xvfb
+# package but xvfb-run shells out to it, so leaving it out fails at startup.
+# The font and library packages are what let Chromium start and render at all
+# in a slim image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
         chromium \
         xvfb \
+        xauth \
         fonts-liberation \
         libnss3 \
         libatk1.0-0 \
