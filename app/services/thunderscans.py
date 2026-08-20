@@ -182,10 +182,9 @@ class ThunderScansScraper:
             logger.info(f"Using cached thunder index ({age:.0f}s old)")
             return self._index
 
-        # Solve the challenge once up front so the sitemap fan-out below can
-        # share one clearance instead of racing to solve it many times over.
-        await thunderscans_session.ensure()
-
+        # The two sitemap fetches below go through the session, so by the time
+        # the fan-out starts any clearance the origin demands is already in
+        # hand and shared, rather than being raced for by every page at once.
         series_resp = await thunderscans_session.get(SERIES_SITEMAP)
         series_resp.raise_for_status()
         slugs: Set[str] = set()
