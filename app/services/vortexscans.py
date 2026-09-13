@@ -36,6 +36,7 @@ from selectolax.parser import HTMLParser
 
 from app.core.logging import get_logger
 from app.models.vortexscans import ChapterInfo, ScrapeResult, VortexSeries
+from app.utils.html import attr
 
 logger = get_logger(__name__)
 
@@ -175,7 +176,7 @@ class VortexScansScraper:
 
         cards: Dict[str, dict] = {}
         for anchor in section.css('a[href^="/series/"]'):
-            href = anchor.attributes.get("href", "")
+            href = attr(anchor, "href")
             if "/chapter-" in href:
                 continue
             slug = slug_from_href(href)
@@ -224,9 +225,9 @@ class VortexScansScraper:
                 break
             node = node.parent
             slugs = {
-                a.attributes.get("href", "").rstrip("/").split("/")[-1]
+                attr(a, "href").rstrip("/").split("/")[-1]
                 for a in node.css('a[href^="/series/"]')
-                if "/chapter-" not in a.attributes.get("href", "")
+                if "/chapter-" not in attr(a, "href")
             }
             if len(slugs) > 1:
                 break
@@ -239,7 +240,7 @@ class VortexScansScraper:
         tree = HTMLParser(html)
         cards: Dict[str, dict] = {}
         for anchor in tree.css('a[href^="/series/"]'):
-            href = anchor.attributes.get("href", "")
+            href = attr(anchor, "href")
             if "/chapter-" in href:
                 continue
             slug = slug_from_href(href)
@@ -309,7 +310,7 @@ class VortexScansScraper:
     def _parse_card(self, card, slug: str, href: str) -> Optional[dict]:
         title = None
         for a in card.css('a[href^="/series/"]'):
-            t = (a.attributes.get("title") or "").strip()
+            t = attr(a, "title").strip()
             if t:
                 title = t
                 break
@@ -320,7 +321,7 @@ class VortexScansScraper:
 
         cover = None
         for img in card.css("img"):
-            src = img.attributes.get("src", "")
+            src = attr(img, "src")
             if "storage.vortexscans.org" in src and "Logo" not in src:
                 cover = src
                 break
@@ -346,7 +347,7 @@ class VortexScansScraper:
         # Chapters shown on the card, with their exact release timestamps.
         card_chapters: List[dict] = []
         for a in card.css('a[href*="/chapter-"]'):
-            chref = a.attributes.get("href", "")
+            chref = attr(a, "href")
             m = _CHAPTER_URL_RE.search(chref)
             if not m:
                 continue
@@ -355,7 +356,7 @@ class VortexScansScraper:
                 {
                     "number": m.group(2),
                     "url": BASE_URL + chref,
-                    "released_at": _parse_ts(tnode.attributes.get("datetime", "")) if tnode else None,
+                    "released_at": _parse_ts(attr(tnode, "datetime")) if tnode else None,
                 }
             )
 
@@ -444,8 +445,8 @@ class VortexScansScraper:
         name = None
         cover = None
         for img in tree.css("img"):
-            alt = img.attributes.get("alt", "")
-            src = img.attributes.get("src", "")
+            alt = attr(img, "alt")
+            src = attr(img, "src")
             if alt.startswith("Cover of") and "storage.vortexscans.org" in src:
                 cover = src
                 name = alt[len("Cover of"):].strip()
@@ -469,11 +470,11 @@ class VortexScansScraper:
         # still includes chapter 1, which is what the month filter needs.
         page_chapters: List[Tuple[str, Optional[datetime]]] = []
         for a in tree.css('a[href*="/chapter-"]'):
-            m = _CHAPTER_URL_RE.search(a.attributes.get("href", ""))
+            m = _CHAPTER_URL_RE.search(attr(a, "href"))
             tnode = a.css_first("time[datetime]")
             if m and tnode:
                 page_chapters.append(
-                    (m.group(2), _parse_ts(tnode.attributes.get("datetime", "")))
+                    (m.group(2), _parse_ts(attr(tnode, "datetime")))
                 )
 
         status = self._labelled_value(tree, "Status")

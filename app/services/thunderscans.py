@@ -39,6 +39,7 @@ from app.core.logging import get_logger
 from app.models.vortexscans import ChapterInfo, ScrapeResult, VortexSeries
 from app.services.cloudflare import ChallengeError, thunderscans_session
 from app.services.vortexscans import normalize_title
+from app.utils.html import attr
 
 logger = get_logger(__name__)
 
@@ -294,7 +295,7 @@ class ThunderScansScraper:
 
         cover = None
         for img in tree.css("img"):
-            src = img.attributes.get("src") or img.attributes.get("data-src") or ""
+            src = attr(img, "src") or attr(img, "data-src")
             if "/wp-content/uploads/" in src:
                 cover = src
                 break
@@ -302,7 +303,7 @@ class ThunderScansScraper:
         # Chapter rows carry the real publish dates, e.g. "Chapter 1April 5, 2026".
         chapters: Dict[str, Optional[datetime]] = {}
         for a in tree.css("a[href]"):
-            hit = self._match_chapter(a.attributes.get("href", ""), self._slugs or {slug})
+            hit = self._match_chapter(attr(a, "href"), self._slugs or {slug})
             if not hit or hit[0] != slug:
                 continue
             number = hit[1]
