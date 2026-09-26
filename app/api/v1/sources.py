@@ -88,11 +88,14 @@ async def source_cover(
     """
     src = _resolve(source)
 
-    # Only ever fetch from the source's own host: an open proxy would let any
-    # caller pull arbitrary URLs through this server.
-    host = httpx.URL(url).host or ""
-    if host != src.site and not host.endswith(f".{src.site}"):
-        raise HTTPException(400, f"URL host {host!r} does not belong to {src.site}")
+    # Only ever fetch what belongs to this source: an open proxy would let any
+    # caller pull arbitrary URLs through this server. See Source.allows_cover
+    # for why a CDN in front of the origin still has to name it.
+    parsed = httpx.URL(url)
+    if not src.allows_cover(parsed):
+        raise HTTPException(
+            400, f"URL host {parsed.host!r} does not belong to {src.site}"
+        )
 
     try:
         if src.session is not None:

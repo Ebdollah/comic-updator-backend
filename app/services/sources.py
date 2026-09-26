@@ -14,8 +14,16 @@ To add a source: write its scraper module, then add one entry here.
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from app.services import thunderscans, vortexscans
 from app.services.cloudflare import CloudflareSession, thunderscans_session
+
+# Jetpack's image CDN. Vortex started routing covers through it, so a stored
+# cover_url can name one of these hosts rather than the site's own. A Photon
+# URL carries the origin it is proxying as its first path segment:
+# https://i0.wp.com/storage.vortexscans.org/upload/series/... .
+PHOTON_HOSTS = ("i0.wp.com", "i1.wp.com", "i2.wp.com", "i3.wp.com")
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,26 @@ class Source:
     # Set when the origin is behind a Cloudflare challenge, so the cover proxy
     # knows to fetch images through a cleared session rather than plainly.
     session: Optional[CloudflareSession] = None
+
+    def owns_host(self, host: str) -> bool:
+        """True for this source's own domain or any subdomain of it."""
+        return bool(host) and (host == self.site or host.endswith(f".{self.site}"))
+
+    def allows_cover(self, url: httpx.URL) -> bool:
+        """Whether the cover proxy may fetch this URL on the source's behalf.
+
+        The proxy must never become an open relay, so this is a allowlist, not
+        a sanity check. Photon hosts are accepted only when the origin encoded
+        in the path is one of ours: anyone can ask Jetpack to proxy anything,
+        so trusting i0.wp.com wholesale would reopen exactly the hole the host
+        check exists to close.
+        """
+        host = url.host or ""
+        if self.owns_host(host):
+            return True
+        if host in PHOTON_HOSTS:
+            return self.owns_host(url.path.lstrip("/").split("/")[0])
+        return False
 
 
 SOURCES: Dict[str, Source] = {
