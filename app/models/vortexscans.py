@@ -11,8 +11,8 @@ class ChapterInfo(BaseModel):
     released_at: Optional[datetime] = Field(None, description="UTC release timestamp")
 
 
-class VortexSeries(BaseModel):
-    """A series scraped from vortexscans.org."""
+class SeriesSummary(BaseModel):
+    """Everything about a series except its chapter list - what the feed shows."""
 
     slug: str = Field(..., description="URL slug, also used as the Firestore document id")
     name: str
@@ -29,10 +29,30 @@ class VortexSeries(BaseModel):
     latest_chapter: Optional[str] = None
     latest_chapter_url: Optional[str] = None
 
-    chapters: List[ChapterInfo] = Field(default_factory=list)
-
     source: str = "vortexscans.org"
     scraped_at: Optional[datetime] = None
+
+
+class VortexSeries(SeriesSummary):
+    """A stored series in full, as scraped from its source."""
+
+    chapters: List[ChapterInfo] = Field(default_factory=list)
+
+
+class MonthCount(BaseModel):
+    month: str = Field(..., description="Debut month, e.g. '2026-08'")
+    count: int
+
+
+class FeedPage(BaseModel):
+    """One page of the dashboard feed, plus the counts its filters need."""
+
+    items: List[SeriesSummary]
+    total: int = Field(..., description="Series matching the filters, across all pages")
+    offset: int
+    next_offset: Optional[int] = Field(None, description="Pass back to get the next page; null at the end")
+    all_count: int = Field(..., description="Every stored series for the source, unfiltered")
+    months: List[MonthCount] = Field(default_factory=list, description="Debut months, newest first")
 
 
 class ScrapeResult(BaseModel):
@@ -47,3 +67,21 @@ class ScrapeResult(BaseModel):
     skipped_slugs: List[str] = Field(default_factory=list)
     dry_run: bool = False
     duration_seconds: float = 0.0
+
+
+class SourceScrapeOutcome(BaseModel):
+    """How one source fared in a scrape-all run."""
+
+    source: str
+    name: str
+    ok: bool
+    result: Optional[ScrapeResult] = None
+    error: Optional[str] = None
+
+
+class MultiScrapeResult(BaseModel):
+    """Summary of scraping every source at once."""
+
+    total_saved: int = 0
+    duration_seconds: float = 0.0
+    sources: List[SourceScrapeOutcome] = Field(default_factory=list)

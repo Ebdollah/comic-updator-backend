@@ -7,6 +7,7 @@ from app.core.logging import get_logger
 from app.core.scheduler import get_scheduler_status
 from app.models.vortexscans import ScrapeResult, VortexSeries
 from app.services.firebase import firebase_service
+from app.services.series_index import series_index
 from app.services.vortexscans import COLLECTION, vortexscans_scraper
 
 logger = get_logger(__name__)
@@ -24,7 +25,10 @@ async def scrape_vortexscans(
     Series already in Firestore are skipped, so this is safe to run repeatedly.
     """
     try:
-        return await vortexscans_scraper.run_and_store(year=year, month=month, dry_run=dry_run)
+        result = await vortexscans_scraper.run_and_store(year=year, month=month, dry_run=dry_run)
+        if not dry_run:
+            series_index.invalidate(COLLECTION)
+        return result
     except Exception as e:
         logger.error(f"Scrape failed: {e}")
         raise HTTPException(status_code=502, detail=f"Scrape failed: {e}")

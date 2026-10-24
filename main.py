@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -25,6 +27,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize Firebase: {e}")
 
+    # Load the feed's summary index in the background, so the first page view
+    # after a deploy is served from memory instead of waiting on Firestore.
+    from app.services.series_index import series_index
+    from app.services.sources import SOURCES
+    warm_up = asyncio.create_task(series_index.warm(s.collection for s in SOURCES.values()))
+
     # Start the recurring scrape job
     try:
         start_scheduler()
@@ -34,6 +42,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    warm_up.cancel()
     shutdown_scheduler()
     logger.info("Shutting down Comic Updator Backend")
 

@@ -28,12 +28,12 @@ async def _run_vortexscans_scrape() -> None:
     never hit at the same time, and so one slow source cannot starve the
     other of connections.
     """
-    from app.services.sources import SOURCES
+    from app.services.sources import SOURCES, run_source
 
     for source in SOURCES.values():
         logger.info(f"Scheduled scrape starting: {source.id}")
         try:
-            result = await source.scraper.run_and_store()
+            result = await run_source(source)
             logger.info(
                 f"Scheduled scrape finished for {source.id}: {result.saved} saved, "
                 f"{result.already_stored} already stored, {result.duration_seconds}s"

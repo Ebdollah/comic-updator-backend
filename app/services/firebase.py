@@ -1,6 +1,6 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
-from typing import Optional
+from typing import List, Optional
 import json
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -109,6 +109,17 @@ class FirebaseService:
         if col is None:
             return []
         return [{**doc.to_dict(), "id": doc.id} for doc in col.limit(limit).stream()]
+
+    def list_projected(self, collection_name: str, fields: List[str]) -> list:
+        """Every document in a collection, carrying only the named fields.
+
+        The projection happens server side, so fields left out - a long
+        chapter list, say - are never sent over the wire.
+        """
+        col = self.get_collection(collection_name)
+        if col is None:
+            return []
+        return [doc.to_dict() or {} for doc in col.select(fields).stream()]
 
 
 # Global Firebase service instance
