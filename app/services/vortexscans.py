@@ -120,6 +120,7 @@ class VortexScansScraper:
         self._chapter_index_at: float = 0.0
         self._catalog: Optional[Dict[str, dict]] = None
         self._catalog_at: float = 0.0
+        self._debut_cache: Dict[str, datetime] = {}
         self.last_run_at: Optional[datetime] = None
         self.last_result: Optional[ScrapeResult] = None
 
@@ -614,6 +615,9 @@ class VortexScansScraper:
         debut: Dict[str, datetime] = {}
 
         for slug in all_slugs:
+            if slug in self._debut_cache:
+                debut[slug] = self._debut_cache[slug]
+                continue
             ts = self._debut_from(index.get(slug, []))
             if ts is None:
                 ts = self._debut_from(
@@ -626,6 +630,7 @@ class VortexScansScraper:
                 unresolved.append(slug)
             else:
                 debut[slug] = ts
+                self._debut_cache[slug] = ts
 
         # 3. Anything still unknown gets its own page fetched, so a new series
         #    missing from the sitemaps cannot slip through.
@@ -639,6 +644,7 @@ class VortexScansScraper:
                 ts = self._debut_from(page.get("page_chapters", []))
                 if ts:
                     debut[slug] = ts
+                    self._debut_cache[slug] = ts
 
         matched = [
             slug

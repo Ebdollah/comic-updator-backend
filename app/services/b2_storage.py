@@ -205,13 +205,19 @@ class B2StorageService:
             logger.warning("B2 is not configured; returning original image URL")
             return image_url
 
+        # Jetpack Photon CDN (i0.wp.com, i1.wp.com, etc.) rate-limits with 429s.
+        # Unwrap to direct origin URL and strip resizing query params.
+        fetch_url = re.sub(r"^https?://i\d+\.wp\.com/", "https://", image_url)
+        if fetch_url != image_url:
+            fetch_url = fetch_url.split("?")[0]
+
         try:
             # 1. Fetch image bytes from source
             content: bytes
             content_type: str = "image/jpeg"
 
             if session is not None:
-                resp = await session.get(image_url)
+                resp = await session.get(fetch_url)
                 resp.raise_for_status()
                 content = resp.content
                 content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
@@ -222,24 +228,36 @@ class B2StorageService:
                         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
                     ),
                 }
-                if "vortexscans.org" in image_url:
+                if "vortexscans.org" in fetch_url:
                     headers["Referer"] = "https://vortexscans.org/"
-                elif "en-thunderscans.com" in image_url:
+                elif "en-thunderscans.com" in fetch_url:
                     headers["Referer"] = "https://en-thunderscans.com/"
 
                 async with httpx.AsyncClient(
                     headers=headers, follow_redirects=True, timeout=30.0
                 ) as client:
-                    resp = await client.get(image_url)
+                    resp = await client.get(fetch_url)
                     resp.raise_for_status()
                     content = resp.content
                     content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
 
             if not content_type.startswith("image/"):
-                logger.warning(
-                    f"Skipping upload for {slug}: upstream returned non-image content-type {content_type}"
-                )
-                return image_url
+                # Detect image from magic bytes if server returned application/octet-stream
+                if content.startswith(b"\xff\xd8\xff"):
+                    content_type = "image/jpeg"
+                elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+                    content_type = "image/png"
+                elif content.startswith(b"RIFF") and b"WEBP" in content[:16]:
+                    content_type = "image/webp"
+                elif content.startswith((b"GIF87a", b"GIF89a")):
+                    content_type = "image/gif"
+                elif b"ftypavif" in content[:16] or b"ftyp" in content[4:12]:
+                    content_type = "image/avif"
+                else:
+                    logger.warning(
+                        f"Skipping upload for {slug}: upstream returned non-image content-type {content_type}"
+                    )
+                    return image_url
 
             # 2. Determine file extension
             ext = MIME_TO_EXT.get(content_type)
