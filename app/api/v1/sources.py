@@ -70,7 +70,7 @@ async def source_feed(
     limit: int = Query(24, ge=1, le=100),
     sort: Literal["newest", "updated", "chapters", "name"] = Query("newest"),
     month: Optional[str] = Query(
-        None, pattern=r"^\d{4}-\d{2}$", description="Debut month 'YYYY-MM'; omit for all"
+        None, pattern=r"^\d{4}(-\d{2})?$", description="Debut month 'YYYY-MM' or year 'YYYY'; omit for all"
     ),
     q: str = Query("", max_length=200, description="Case-insensitive name filter"),
 ) -> Dict[str, Any]:

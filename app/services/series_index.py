@@ -127,7 +127,13 @@ def query_feed(
 
     matched = items
     if month:
-        matched = [s for s in matched if month_key(s.get("first_chapter_released_at")) == month]
+        if len(month) == 4:
+            matched = [
+                s for s in matched
+                if (month_key(s.get("first_chapter_released_at")) or "").startswith(month)
+            ]
+        else:
+            matched = [s for s in matched if month_key(s.get("first_chapter_released_at")) == month]
     needle = q.strip().casefold()
     if needle:
         matched = [s for s in matched if needle in (s.get("name") or "").casefold()]
