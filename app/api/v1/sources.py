@@ -147,6 +147,11 @@ async def source_cover(
     """
     src = _resolve(source)
 
+    parsed = httpx.URL(url)
+    if parsed.host and "backblazeb2.com" in parsed.host:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=url, status_code=307)
+
     # Only ever fetch what belongs to this source: an open proxy would let any
     # caller pull arbitrary URLs through this server. See Source.allows_cover
     # for why a CDN in front of the origin still has to name it.

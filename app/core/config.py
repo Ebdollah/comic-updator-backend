@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     app_name: str = "Comic Updator Backend"
     app_version: str = "1.0.0"
     debug: bool = False
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _parse_debug(cls, value):
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on", "t")
+        return bool(value)
     
     # Server settings
     host: str = "0.0.0.0"
@@ -29,6 +36,14 @@ class Settings(BaseSettings):
     firebase_token_uri: Optional[str] = None
     firebase_auth_provider_x509_cert_url: Optional[str] = None
     firebase_client_x509_cert_url: Optional[str] = None
+    
+    # Backblaze B2 settings
+    b2_key_id: Optional[str] = None
+    b2_application_key: Optional[str] = None
+    b2_bucket_id: Optional[str] = None
+    b2_bucket_name: Optional[str] = None
+    b2_s3_region: Optional[str] = None
+    b2_download_url: Optional[str] = None
     
     # CORS settings.
     # Typed as a union so pydantic-settings tolerates a value that is not JSON;

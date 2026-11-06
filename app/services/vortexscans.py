@@ -714,6 +714,7 @@ class VortexScansScraper:
         """
         from starlette.concurrency import run_in_threadpool
 
+        from app.services.b2_storage import b2_storage
         from app.services.firebase import firebase_service
 
         existing = await run_in_threadpool(firebase_service.existing_ids, COLLECTION)
@@ -734,6 +735,16 @@ class VortexScansScraper:
 
         for series in new_series:
             try:
+                if series.cover_url and b2_storage.is_configured:
+                    b2_url = await b2_storage.download_and_store_image(
+                        image_url=series.cover_url,
+                        source_id="vortexscans",
+                        slug=series.slug,
+                    )
+                    if b2_url and b2_url != series.cover_url:
+                        series.original_cover_url = series.cover_url
+                        series.cover_url = b2_url
+
                 await run_in_threadpool(
                     firebase_service.set_document,
                     COLLECTION,

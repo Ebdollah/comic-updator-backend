@@ -18,6 +18,7 @@ class SeriesSummary(BaseModel):
     name: str
     url: str
     cover_url: Optional[str] = None
+    original_cover_url: Optional[str] = None
     rating: Optional[float] = None
     type: Optional[str] = Field(None, description="Manhwa / Manga / Manhua")
     status: Optional[str] = Field(None, description="Ongoing / Completed / Hiatus")

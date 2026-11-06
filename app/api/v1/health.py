@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any
 from app.core.logging import get_logger
+from app.services.b2_storage import b2_storage
 from app.services.firebase import firebase_service
 
 logger = get_logger(__name__)
@@ -46,6 +47,35 @@ async def detailed_health_check() -> Dict[str, Any]:
         health_status["services"]["firebase"] = {
             "status": "error",
             "message": f"Firebase connection failed: {str(e)}"
+        }
+        health_status["status"] = "degraded"
+
+    # Check Backblaze B2 connectivity
+    try:
+        if b2_storage.is_configured:
+            b2_test = await b2_storage.test_connection()
+            if b2_test.get("ok"):
+                health_status["services"]["backblaze_b2"] = {
+                    "status": "connected",
+                    "bucket": b2_test.get("bucket"),
+                    "download_url": b2_test.get("download_url"),
+                }
+            else:
+                health_status["services"]["backblaze_b2"] = {
+                    "status": "error",
+                    "message": b2_test.get("error"),
+                }
+                health_status["status"] = "degraded"
+        else:
+            health_status["services"]["backblaze_b2"] = {
+                "status": "not_configured",
+                "message": "Backblaze B2 not configured in environment",
+            }
+    except Exception as e:
+        logger.error(f"Backblaze B2 health check failed: {e}")
+        health_status["services"]["backblaze_b2"] = {
+            "status": "error",
+            "message": str(e),
         }
         health_status["status"] = "degraded"
     
