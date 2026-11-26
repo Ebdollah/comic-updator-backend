@@ -70,7 +70,6 @@ SITE_TZ = timezone(timedelta(hours=8))
 EXCLUDED_THEMES: Dict[str, str] = {
     "恋爱": "in love (romance)",
     "校园": "campus (school)",
-    "热血": "passion (hot-blooded / action)",
 }
 
 STATUS_LABELS = {"连载中": "Ongoing", "连载": "Ongoing", "已完结": "Completed", "完结": "Completed"}

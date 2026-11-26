@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     b2_bucket_name: Optional[str] = None
     b2_s3_region: Optional[str] = None
     b2_download_url: Optional[str] = None
+
+    # DeepL API key, for translating Kuaikan titles and descriptions into
+    # English. A Free-plan key ends in ":fx" and uses api-free.deepl.com.
+    deepl_key: Optional[str] = None
     
     # CORS settings.
     # Typed as a union so pydantic-settings tolerates a value that is not JSON;
