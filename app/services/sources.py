@@ -18,13 +18,13 @@ progress and refresh the feed's summary index when it finishes.
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from app.core.logging import get_logger
 from app.models.vortexscans import MultiScrapeResult, ScrapeResult, SourceScrapeOutcome
-from app.services import thunderscans, vortexscans
+from app.services import kuaikan, thunderscans, vortexscans
 from app.services.cloudflare import CloudflareSession, thunderscans_session
 from app.services.series_index import series_index
 
@@ -48,6 +48,9 @@ class Source:
     # Set when the origin is behind a Cloudflare challenge, so the cover proxy
     # knows to fetch images through a cleared session rather than plainly.
     session: Optional[CloudflareSession] = None
+    # Image CDNs on a domain of their own (Kuaikan serves covers from
+    # kkmh.com), which the cover proxy may fetch from for this source.
+    cover_hosts: Tuple[str, ...] = ()
 
     def owns_host(self, host: str) -> bool:
         """True for this source's own domain or any subdomain of it."""
@@ -64,6 +67,8 @@ class Source:
         """
         host = url.host or ""
         if self.owns_host(host):
+            return True
+        if any(host == h or host.endswith(f".{h}") for h in self.cover_hosts):
             return True
         if host in PHOTON_HOSTS:
             return self.owns_host(url.path.lstrip("/").split("/")[0])
@@ -91,6 +96,20 @@ SOURCES: Dict[str, Source] = {
             "mature or yuri are excluded."
         ),
         session=thunderscans_session,
+    ),
+    "kuaikan": Source(
+        id="kuaikan",
+        name="Manhua",
+        site=kuaikan.SITE,
+        collection=kuaikan.COLLECTION,
+        scraper=kuaikan.kuaikan_scraper,
+        notes=(
+            "Chinese series on kuaikanmanhua.com whose chapter 1 released in the target "
+            "month. Excluded themes: "
+            + ", ".join(f"{zh} {en}" for zh, en in kuaikan.EXCLUDED_THEMES.items())
+            + "."
+        ),
+        cover_hosts=("kkmh.com",),
     ),
 }
 
