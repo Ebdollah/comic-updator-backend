@@ -131,11 +131,28 @@ THEMES_EN: Dict[str, str] = {
     "励志": "Inspirational", "网游": "Online Game", "豪门": "Wealthy Family",
     "宫廷": "Palace", "江湖": "Martial World", "神豪": "Tycoon", "兽人": "Beastmen",
     "战斗": "Battle", "怪物": "Monsters", "魔法": "Magic", "御兽": "Beast Taming",
+    # Seen in the 2026 backfill, where machine translation got them wrong
+    # ("Submit", "Home-Oriented", "Alien") or left them vague.
+    "强剧情": "Plot-Driven", "亲情": "Family Bonds", "异形": "Monsters", "宅向": "Otaku",
+    "畅销": "Best-Seller", "投稿": "Indie", "名著": "Classic Adaptation", "传统": "Traditional",
+    "惊悚": "Thriller",
 }
+
+# Tags that describe a series' state rather than its content; the status
+# field already carries them, so they are left out of the themes.
+DROP_TAGS = {"完结", "连载", "连载中", "已完结", "新作"}
 
 _CHAPTER_NUMBER_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*[话話]")
 _POSTER_SIZE_RE = re.compile(r"(\.(?:webp|jpe?g|png))-w\d+[^/]*$", re.I)
 _MONTH_DAY_RE = re.compile(r"^(?:(\d{4})[-./])?(\d{1,2})[-./](\d{1,2})$")
+
+
+_CJK_RE = re.compile(r"[㐀-鿿豈-﫿]")
+
+
+def has_cjk(text: Optional[str]) -> bool:
+    """Whether text contains Chinese characters, i.e. still needs translating."""
+    return bool(_CJK_RE.search(text or ""))
 
 
 def normalize_title(title: str) -> str:
@@ -377,6 +394,7 @@ class KuaikanScraper:
 
     async def english(self, title: str, tags: List[str]) -> Tuple[Optional[str], List[str]]:
         """English title (None when translation failed) and English tags."""
+        tags = [t for t in tags if t not in DROP_TAGS]
         unknown = [t for t in tags if t not in THEMES_EN]
         translated: Dict[str, str] = {}
         name_en: Optional[str] = None
@@ -385,9 +403,12 @@ class KuaikanScraper:
             logger.warning("DEEPL_KEY is not set; Kuaikan titles stay in Chinese")
         else:
             try:
-                out = await translator.translate([title] + unknown)
-                name_en = title_case(out[0]) or None
-                translated = {zh: title_case(en) for zh, en in zip(unknown, out[1:])}
+                # An empty title means "keep it": only the unknown tags go out.
+                texts = ([title] if title else []) + unknown
+                out = await translator.translate(texts) if texts else []
+                if title:
+                    name_en, out = title_case(out[0]) or None, out[1:]
+                translated = {zh: title_case(en) for zh, en in zip(unknown, out)}
                 if unknown:
                     logger.warning(f"Kuaikan tags not in THEMES_EN, machine-translated: {translated}")
             except TranslationError as e:
@@ -404,8 +425,9 @@ class KuaikanScraper:
         """
         series.name_original = series.name
         series.genres_original = list(series.genres)
-        name_en, series.genres = await self.english(series.name, series.genres)
-        if name_en:
+        title = series.name if has_cjk(series.name) else ""  # PLUTO stays PLUTO
+        name_en, series.genres = await self.english(title, series.genres)
+        if name_en and title:
             series.name = name_en
 
     async def translate_stored(self) -> int:
@@ -429,7 +451,9 @@ class KuaikanScraper:
         updated = 0
         for doc in docs:
             original = doc.get("name_original")
-            if original and doc.get("name") != original:
+            # Done when the name differs, or when the site's own title is
+            # already Latin (PLUTO, NOVA) so the two rightly match.
+            if original and (doc.get("name") != original or not has_cjk(original)):
                 continue
             title = original or doc.get("name") or ""
             tags = doc.get("genres_original") or doc.get("genres") or []
@@ -559,13 +583,52 @@ class KuaikanScraper:
             except Exception as e:
                 logger.error(f"Failed to save kuaikan {series.slug}: {e}")
 
-    async def _retry_translations(self) -> None:
+    async def store_missing_covers(self) -> int:
+        """Copy covers still pointing at Kuaikan into B2; returns how many moved.
+
+        A cover whose upload failed when its series was saved (a network
+        blip, say) keeps the site's URL, which the cover proxy can still
+        serve. This moves it into the bucket on a later run.
+        """
+        from starlette.concurrency import run_in_threadpool
+
+        from app.services.b2_storage import b2_storage
+        from app.services.firebase import firebase_service
+
+        if not b2_storage.is_configured:
+            return 0
+        docs = await run_in_threadpool(firebase_service.list_projected, COLLECTION, ["slug", "cover_url"])
+        moved = 0
+        for doc in docs:
+            url = doc.get("cover_url") or ""
+            if not url or "backblazeb2.com" in url or not doc.get("slug"):
+                continue
+            b2_url = await b2_storage.download_and_store_image(image_url=url, source_id="kuaikan", slug=doc["slug"])
+            if b2_url and b2_url != url:
+                await run_in_threadpool(
+                    firebase_service.set_document,
+                    COLLECTION,
+                    doc["slug"],
+                    {"cover_url": b2_url, "original_cover_url": url},
+                    merge=True,
+                )
+                moved += 1
+        return moved
+
+    async def _retry_failed(self) -> None:
+        """Second chances for work that failed when a series was saved."""
         try:
             retried = await self.translate_stored()
             if retried:
                 logger.info(f"Translated {retried} stored kuaikan series still in Chinese")
         except Exception as e:
             logger.error(f"Kuaikan translation retry failed: {e}")
+        try:
+            moved = await self.store_missing_covers()
+            if moved:
+                logger.info(f"Moved {moved} kuaikan covers into B2 after an earlier failure")
+        except Exception as e:
+            logger.error(f"Kuaikan cover retry failed: {e}")
 
     async def scrape_new_series(
         self,
@@ -613,7 +676,7 @@ class KuaikanScraper:
             return result
 
         await self._store(new_series, result)
-        await self._retry_translations()
+        await self._retry_failed()
         self.last_result = result
         self.last_run_at = datetime.now(timezone.utc)
         return result
@@ -659,7 +722,7 @@ class KuaikanScraper:
                 )
 
         if not dry_run:
-            await self._retry_translations()
+            await self._retry_failed()
         return results
 
 
