@@ -107,7 +107,7 @@ SOURCES: Dict[str, Source] = {
             "Chinese series on kuaikanmanhua.com whose chapter 1 released in the target "
             "month. Excluded themes: "
             + ", ".join(kuaikan.THEMES_EN.get(zh, en) for zh, en in kuaikan.EXCLUDED_THEMES.items())
-            + "."
+            + ", and anything tagged or described as BL/GL."
         ),
         cover_hosts=("kkmh.com",),
     ),

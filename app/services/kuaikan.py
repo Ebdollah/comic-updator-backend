@@ -26,7 +26,7 @@ Strategy
 
 Text is stored in English: tags and status through fixed tables, the title
 through DeepL, with the Chinese kept in `name_original`/`genres_original`.
-Theme filtering and duplicate checks work on the Chinese. Covers go to the
+Theme filtering, the BL/GL filter and duplicate checks work on the Chinese. Covers go to the
 B2 bucket like the other sources.
 """
 
@@ -75,6 +75,29 @@ EXCLUDED_THEMES: Dict[str, str] = {
     "校园": "campus (school)",
 }
 
+# BL/GL content is never stored from this source, whatever its other themes.
+# Chinese platforms rarely say so outright: BL is usually coded as 双男主
+# (two male leads) or 纯爱 ("pure love"), GL as 双女主 or 百合. A tag is
+# excluded when it is one of these or contains one of the fragments, so
+# variants like 耽美向 hit too.
+BLGL_TAGS = {
+    "耽美", "纯爱", "双男主", "男男", "腐", "腐向", "腐女", "攻受", "男同", "耽改", "bl",
+    "百合", "双女主", "女女", "女同", "姬情", "gl",
+}
+BLGL_TAG_FRAGMENTS = ("耽美", "纯爱", "双男主", "男男", "腐向", "耽改", "百合", "双女主", "女女", "女同")
+
+# Description and title are free text, so only fragments that cannot be part
+# of an ordinary phrase are searched there. 男男/女女 are left out: they occur
+# in 男男女女 ("men and women") and across word joins like 暖男男主.
+BLGL_TEXT_FRAGMENTS = (
+    "耽美", "纯爱", "双男主", "腐向", "腐女", "攻受", "男同", "耽改",
+    "百合", "双女主", "女同", "姬情",
+)
+_BLGL_TEXT_IGNORE = ("百合花",)  # the flower
+_BLGL_LATIN = re.compile(
+    r"(?<![A-Za-z])(?:BL|GL|(?i:boys'? ?love|girls'? ?love|yaoi|yuri|shounen[- ]ai|shoujo[- ]ai))(?![A-Za-z])"
+)
+
 STATUS_LABELS = {"连载中": "Ongoing", "连载": "Ongoing", "已完结": "Completed", "完结": "Completed"}
 
 # English names for the site's tags. A fixed table rather than machine
@@ -121,6 +144,25 @@ def normalize_title(title: str) -> str:
 
 def excluded_themes_in(tags: List[str]) -> List[str]:
     return [t for t in tags if t in EXCLUDED_THEMES]
+
+
+def blgl_signals(tags: List[str], *texts: Optional[str]) -> List[str]:
+    """Every BL/GL signal in a series' tags, title and description.
+
+    Any one of them excludes the series; the list is for the log.
+    """
+    found: List[str] = []
+    for tag in tags or []:
+        key = unicodedata.normalize("NFKC", tag or "").strip().casefold()
+        if key in BLGL_TAGS or any(f in key for f in BLGL_TAG_FRAGMENTS) or _BLGL_LATIN.search(tag or ""):
+            found.append(f"tag {tag}")
+    for text in texts:
+        text = unicodedata.normalize("NFKC", text or "")
+        for ignore in _BLGL_TEXT_IGNORE:
+            text = text.replace(ignore, "")
+        found += [f"text '{f}'" for f in BLGL_TEXT_FRAGMENTS if f in text]
+        found += [f"text '{m.group(0)}'" for m in _BLGL_LATIN.finditer(text)]
+    return found
 
 
 def parse_debut(value: str) -> Optional[datetime]:
@@ -372,6 +414,19 @@ class KuaikanScraper:
 
     # -------------------------------------------------------- orchestration
 
+    @staticmethod
+    def _excluded(slug: str, title: Optional[str], tags: List[str], *texts: Optional[str]) -> bool:
+        """Apply this source's content filters, logging why a series is dropped."""
+        themes = excluded_themes_in(tags)
+        if themes:
+            logger.info(f"Skipping kuaikan {slug} {title}: excluded theme(s) {themes}")
+            return True
+        signals = blgl_signals(tags, *texts)
+        if signals:
+            logger.info(f"Skipping kuaikan {slug} {title}: BL/GL {signals}")
+            return True
+        return False
+
     async def scrape_new_series(
         self,
         year: Optional[int] = None,
@@ -405,16 +460,19 @@ class KuaikanScraper:
 
                 # The list's tags are a subset of the page's; checking them
                 # first saves a page fetch for most excluded series.
-                blocked = excluded_themes_in(entry.get("category") or [])
-                if blocked:
-                    logger.info(f"Skipping kuaikan {slug} {entry.get('title')}: excluded theme(s) {blocked}")
+                list_tags = entry.get("category") or []
+                if self._excluded(slug, entry.get("title"), list_tags, entry.get("title")):
                     continue
 
                 await asyncio.sleep(REQUEST_DELAY)
                 page = await self.fetch_series_page(client, entry["topic_id"])
-                blocked = excluded_themes_in((page or {}).get("info", {}).get("tags") or [])
-                if blocked:
-                    logger.info(f"Skipping kuaikan {slug} {entry.get('title')}: excluded theme(s) {blocked}")
+                info = (page or {}).get("info") or {}
+                # The page has more tags than the list, and the description.
+                # Series not viewable on the web have neither; the list tags
+                # and title above are all there is to go on for those.
+                if self._excluded(
+                    slug, entry.get("title"), info.get("tags") or [], info.get("title"), info.get("description")
+                ):
                     continue
 
                 series = self.build_series(entry, page)
