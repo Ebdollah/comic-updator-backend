@@ -63,6 +63,12 @@ MAX_PAGES = 5  # the newly-added list is ~30 series today; this is a safety cap
 # Filter API values, as the site's own filter bar sends them.
 REGION_CHINESE = 2  # area: 1 all, 2 Chinese (国漫), 3 Korean, 4 Japanese
 SORT_NEWLY_ADDED = 3  # sort: 1 recommended, 2 hottest, 3 newly added
+SORT_RECOMMENDED = 1  # the only order that walks the whole catalogue
+
+# Whole-catalogue scans (backfills). 100 is the largest page the API serves;
+# it lists ~8,400 Chinese series, so 85 pages today.
+CATALOGUE_PAGE_SIZE = 100
+CATALOGUE_MAX_PAGES = 150
 
 # The site is on Beijing time; its dates are calendar dates there.
 SITE_TZ = timezone(timedelta(hours=8))
@@ -231,6 +237,8 @@ class KuaikanScraper:
     def __init__(self) -> None:
         self.last_run_at: Optional[datetime] = None
         self.last_result: Optional[ScrapeResult] = None
+        # Series dropped by each filter in the current run, for the logs.
+        self.skipped: Dict[str, int] = {}
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -245,33 +253,60 @@ class KuaikanScraper:
 
     # ------------------------------------------------------------ discovery
 
-    async def fetch_newly_added(self, client: httpx.AsyncClient) -> List[dict]:
-        """Every entry on the Chinese "newly added" list, newest debut first."""
-        entries: List[dict] = []
-        for page in range(1, MAX_PAGES + 1):
+    async def _filter_pages(
+        self, client: httpx.AsyncClient, sort: int, size: int, max_pages: int
+    ) -> List[dict]:
+        """Walk the Chinese filter list in one sort order, deduplicated by id.
+
+        A page returns a few entries fewer than asked for - the site drops
+        some after paging - so the end is the first empty page, not a short one.
+        """
+        entries: Dict[int, dict] = {}
+        total = 0
+        for page in range(1, max_pages + 1):
             if page > 1:
                 await asyncio.sleep(REQUEST_DELAY)
             response = await client.get(
                 FILTER_API,
                 params={
                     "page": page,
-                    "size": PAGE_SIZE,
+                    "size": size,
                     "tag_id": 0,
                     "update_status": 0,
                     "pay_status": 0,
                     "label_dimension_origin": REGION_CHINESE,
-                    "sort": SORT_NEWLY_ADDED,
+                    "sort": sort,
                 },
             )
             response.raise_for_status()
             body = response.json()
             if body.get("code") != 200:
                 raise RuntimeError(f"Kuaikan filter API said {body.get('code')}: {body.get('message')}")
+            total = int(body.get("total") or 0)
             batch = (body.get("hits") or {}).get("topicMessageList") or []
-            entries.extend(batch)
-            if len(batch) < PAGE_SIZE or len(entries) >= int(body.get("total") or 0):
+            for entry in batch:
+                entries.setdefault(entry["topic_id"], entry)
+            if not batch or page * size >= total:
                 break
-        return entries
+        if total and len(entries) < total:
+            logger.info(f"Kuaikan list (sort {sort}): {len(entries)} of {total} listed were returned")
+        return list(entries.values())
+
+    async def fetch_newly_added(self, client: httpx.AsyncClient) -> List[dict]:
+        """Every entry on the Chinese "newly added" list, newest debut first.
+
+        The list spans roughly the last three months, which is plenty for the
+        daily run; earlier debuts need fetch_catalogue.
+        """
+        return await self._filter_pages(client, SORT_NEWLY_ADDED, PAGE_SIZE, MAX_PAGES)
+
+    async def fetch_catalogue(self, client: httpx.AsyncClient) -> List[dict]:
+        """Every Chinese series on the site (~8,400; ~85 requests).
+
+        Only for one-off backfills: this is many times the daily run's load
+        on an API that robots.txt asks crawlers to leave alone.
+        """
+        return await self._filter_pages(client, SORT_RECOMMENDED, CATALOGUE_PAGE_SIZE, CATALOGUE_MAX_PAGES)
 
     async def fetch_series_page(self, client: httpx.AsyncClient, topic_id: int) -> Optional[dict]:
         """Status, tags and chapters from the series page, or None if unreadable."""
@@ -415,93 +450,75 @@ class KuaikanScraper:
     # -------------------------------------------------------- orchestration
 
     @staticmethod
-    def _excluded(slug: str, title: Optional[str], tags: List[str], *texts: Optional[str]) -> bool:
-        """Apply this source's content filters, logging why a series is dropped."""
+    def _excluded(slug: str, title: Optional[str], tags: List[str], *texts: Optional[str]) -> Optional[str]:
+        """Apply this source's content filters: why a series is dropped, or None."""
         themes = excluded_themes_in(tags)
         if themes:
             logger.info(f"Skipping kuaikan {slug} {title}: excluded theme(s) {themes}")
-            return True
+            return "excluded theme"
         signals = blgl_signals(tags, *texts)
         if signals:
             logger.info(f"Skipping kuaikan {slug} {title}: BL/GL {signals}")
-            return True
-        return False
+            return "BL/GL"
+        return None
 
-    async def scrape_new_series(
+    async def _process(
         self,
-        year: Optional[int] = None,
-        month: Optional[int] = None,
-        existing_slugs: Optional[set] = None,
-        existing_titles: Optional[set] = None,
-    ) -> Tuple[ScrapeResult, List[VortexSeries]]:
-        started = time.time()
-        now = datetime.now(SITE_TZ)
-        year = year or now.year
-        month = month or now.month
-        existing_slugs = existing_slugs or set()
-        seen_titles: Set[str] = set(existing_titles or set())
+        client: httpx.AsyncClient,
+        entries: List[dict],
+        result: ScrapeResult,
+        existing_slugs: Set[str],
+        seen_titles: Set[str],
+    ) -> List[VortexSeries]:
+        """Filter, fetch, build and translate list entries already narrowed to a period.
 
-        async with self._client() as client:
-            entries = await self.fetch_newly_added(client)
-            result = ScrapeResult(month=f"{year:04d}-{month:02d}", candidates_seen=len(entries))
-            series_list: List[VortexSeries] = []
+        The daily run and the year backfill both go through here, so they
+        apply exactly the same rules. Skips are counted in self.skipped.
+        """
+        series_list: List[VortexSeries] = []
+        for entry in entries:
+            result.matched_month += 1
+            slug = str(entry["topic_id"])
 
-            for entry in entries:
-                debut = parse_debut(entry.get("first_comic_publish_time", ""))
-                if not (debut and debut.year == year and debut.month == month):
-                    continue
-                result.matched_month += 1
-                slug = str(entry["topic_id"])
+            if slug in existing_slugs:
+                result.already_stored += 1
+                result.skipped_slugs.append(slug)
+                continue
 
-                if slug in existing_slugs:
-                    result.already_stored += 1
-                    result.skipped_slugs.append(slug)
-                    continue
-
-                # The list's tags are a subset of the page's; checking them
-                # first saves a page fetch for most excluded series.
-                list_tags = entry.get("category") or []
-                if self._excluded(slug, entry.get("title"), list_tags, entry.get("title")):
-                    continue
-
+            # The list's tags are a subset of the page's; checking them
+            # first saves a page fetch for most excluded series.
+            reason = self._excluded(slug, entry.get("title"), entry.get("category") or [], entry.get("title"))
+            if not reason:
                 await asyncio.sleep(REQUEST_DELAY)
                 page = await self.fetch_series_page(client, entry["topic_id"])
                 info = (page or {}).get("info") or {}
                 # The page has more tags than the list, and the description.
                 # Series not viewable on the web have neither; the list tags
                 # and title above are all there is to go on for those.
-                if self._excluded(
+                reason = self._excluded(
                     slug, entry.get("title"), info.get("tags") or [], info.get("title"), info.get("description")
-                ):
-                    continue
+                )
+            if reason:
+                self.skipped[reason] = self.skipped.get(reason, 0) + 1
+                continue
 
-                series = self.build_series(entry, page)
-                key = normalize_title(series.name)
-                if key and key in seen_titles:
-                    logger.info(f"Skipping duplicate kuaikan title: {series.name} ({slug})")
-                    result.already_stored += 1
-                    result.skipped_slugs.append(slug)
-                    continue
-                seen_titles.add(key)
-                await self.apply_english(series)
-                series_list.append(series)
+            series = self.build_series(entry, page)
+            key = normalize_title(series.name)
+            if key and key in seen_titles:
+                logger.info(f"Skipping duplicate kuaikan title: {series.name} ({slug})")
+                result.already_stored += 1
+                result.skipped_slugs.append(slug)
+                continue
+            seen_titles.add(key)
+            existing_slugs.add(slug)
+            await self.apply_english(series)
+            series_list.append(series)
+        return series_list
 
-        result.duration_seconds = round(time.time() - started, 2)
-        logger.info(
-            f"Kuaikan scrape: {len(entries)} newly added, {result.matched_month} debuted "
-            f"{result.month}, {len(series_list)} pass filters, {result.already_stored} already stored"
-        )
-        return result, series_list
-
-    async def run_and_store(
-        self,
-        year: Optional[int] = None,
-        month: Optional[int] = None,
-        dry_run: bool = False,
-    ) -> ScrapeResult:
+    async def _stored_keys(self) -> Tuple[Set[str], Set[str]]:
+        """Slugs and title keys already in the database, for skipping duplicates."""
         from starlette.concurrency import run_in_threadpool
 
-        from app.services.b2_storage import b2_storage
         from app.services.firebase import firebase_service
 
         existing = await run_in_threadpool(firebase_service.existing_ids, COLLECTION)
@@ -509,19 +526,16 @@ class KuaikanScraper:
         # keeps in name_original once its name is English.
         names = await run_in_threadpool(firebase_service.existing_values, COLLECTION, "name_original")
         names |= await run_in_threadpool(firebase_service.existing_values, COLLECTION, "name")
-        result, new_series = await self.scrape_new_series(
-            year=year,
-            month=month,
-            existing_slugs=existing,
-            existing_titles={normalize_title(n) for n in names},
-        )
-        result.dry_run = dry_run
+        return set(existing), {normalize_title(n) for n in names}
 
-        if dry_run:
-            result.saved_slugs = [s.slug for s in new_series]
-            return result
+    async def _store(self, series_list: List[VortexSeries], result: ScrapeResult) -> None:
+        """Upload covers to B2 and save each series; failures are logged, not raised."""
+        from starlette.concurrency import run_in_threadpool
 
-        for series in new_series:
+        from app.services.b2_storage import b2_storage
+        from app.services.firebase import firebase_service
+
+        for series in series_list:
             try:
                 if series.cover_url and b2_storage.is_configured:
                     b2_url = await b2_storage.download_and_store_image(
@@ -545,6 +559,7 @@ class KuaikanScraper:
             except Exception as e:
                 logger.error(f"Failed to save kuaikan {series.slug}: {e}")
 
+    async def _retry_translations(self) -> None:
         try:
             retried = await self.translate_stored()
             if retried:
@@ -552,9 +567,106 @@ class KuaikanScraper:
         except Exception as e:
             logger.error(f"Kuaikan translation retry failed: {e}")
 
+    async def scrape_new_series(
+        self,
+        year: Optional[int] = None,
+        month: Optional[int] = None,
+        existing_slugs: Optional[set] = None,
+        existing_titles: Optional[set] = None,
+    ) -> Tuple[ScrapeResult, List[VortexSeries]]:
+        started = time.time()
+        now = datetime.now(SITE_TZ)
+        year = year or now.year
+        month = month or now.month
+        self.skipped = {}
+
+        async with self._client() as client:
+            entries = await self.fetch_newly_added(client)
+            result = ScrapeResult(month=f"{year:04d}-{month:02d}", candidates_seen=len(entries))
+            in_month = [e for e in entries if _debuted_in(e, year, month)]
+            series_list = await self._process(
+                client, in_month, result, set(existing_slugs or set()), set(existing_titles or set())
+            )
+
+        result.duration_seconds = round(time.time() - started, 2)
+        logger.info(
+            f"Kuaikan scrape: {len(entries)} newly added, {result.matched_month} debuted "
+            f"{result.month}, {len(series_list)} pass filters, {result.already_stored} already stored, "
+            f"skipped {self.skipped}"
+        )
+        return result, series_list
+
+    async def run_and_store(
+        self,
+        year: Optional[int] = None,
+        month: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> ScrapeResult:
+        existing, titles = await self._stored_keys()
+        result, new_series = await self.scrape_new_series(
+            year=year, month=month, existing_slugs=existing, existing_titles=titles
+        )
+        result.dry_run = dry_run
+
+        if dry_run:
+            result.saved_slugs = [s.slug for s in new_series]
+            return result
+
+        await self._store(new_series, result)
+        await self._retry_translations()
         self.last_result = result
         self.last_run_at = datetime.now(timezone.utc)
         return result
+
+    async def backfill_year(
+        self, year: int, dry_run: bool = False
+    ) -> Dict[str, Tuple[ScrapeResult, Dict[str, int]]]:
+        """Store every Chinese series whose chapter 1 came out in `year`.
+
+        The newly-added list only reaches back about three months, so this
+        walks the whole catalogue once. Each month is processed and saved
+        before the next starts: an interrupted backfill keeps what it saved,
+        and running it again skips those.
+
+        Returns, per month, the result and how many series each filter dropped.
+        """
+        existing, titles = await self._stored_keys()
+        results: Dict[str, Tuple[ScrapeResult, Dict[str, int]]] = {}
+
+        async with self._client() as client:
+            catalogue = await self.fetch_catalogue(client)
+            in_year = [e for e in catalogue if _debuted_in(e, year)]
+            logger.info(f"Kuaikan backfill {year}: {len(in_year)} of {len(catalogue)} catalogue series debuted then")
+
+            for month in range(1, 13):
+                entries = [e for e in in_year if _debuted_in(e, year, month)]
+                if not entries:
+                    continue
+                started = time.time()
+                self.skipped = {}
+                result = ScrapeResult(month=f"{year:04d}-{month:02d}", candidates_seen=len(catalogue), dry_run=dry_run)
+                series_list = await self._process(client, entries, result, existing, titles)
+                if dry_run:
+                    result.saved_slugs = [s.slug for s in series_list]
+                else:
+                    await self._store(series_list, result)
+                result.duration_seconds = round(time.time() - started, 2)
+                results[result.month] = (result, dict(self.skipped))
+                logger.info(
+                    f"Kuaikan backfill {result.month}: {result.matched_month} debuted, "
+                    f"{len(series_list)} pass filters, {result.saved} saved, "
+                    f"{result.already_stored} already stored, skipped {self.skipped}"
+                )
+
+        if not dry_run:
+            await self._retry_translations()
+        return results
+
+
+def _debuted_in(entry: dict, year: int, month: Optional[int] = None) -> bool:
+    """Whether a list entry's chapter 1 came out in that year (and month)."""
+    debut = parse_debut(entry.get("first_comic_publish_time", ""))
+    return bool(debut) and debut.year == year and (month is None or debut.month == month)
 
 
 def _merge_tags(*lists: Optional[List[str]]) -> List[str]:
