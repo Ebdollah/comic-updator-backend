@@ -24,8 +24,10 @@ Strategy
    that page's own scripts call answers plain requests with a 403, so it is
    not used.
 
-Text is stored as the site prints it, in Chinese. Covers go to the B2 bucket
-like the other sources.
+Text is stored in English: tags and status through fixed tables, the title
+through DeepL, with the Chinese kept in `name_original`/`genres_original`.
+Theme filtering and duplicate checks work on the Chinese. Covers go to the
+B2 bucket like the other sources.
 """
 
 import asyncio
@@ -39,6 +41,7 @@ import httpx
 
 from app.core.logging import get_logger
 from app.models.vortexscans import ChapterInfo, ScrapeResult, VortexSeries
+from app.services.translation import TranslationError, get_translator, title_case
 from app.utils.nuxt import NuxtParseError, parse_nuxt_state
 
 logger = get_logger(__name__)
@@ -73,6 +76,33 @@ EXCLUDED_THEMES: Dict[str, str] = {
 }
 
 STATUS_LABELS = {"连载中": "Ongoing", "连载": "Ongoing", "已完结": "Completed", "完结": "Completed"}
+
+# English names for the site's tags. A fixed table rather than machine
+# translation, so a tag reads the same on every series. Tags missing here
+# still get translated by DeepL, and are logged so they can be added.
+THEMES_EN: Dict[str, str] = {
+    # The filter bar's themes
+    "恋爱": "Romance", "古风": "Ancient", "大女主": "Female Lead", "穿越": "Time Travel",
+    "校园": "School", "玄幻": "Xuanhuan", "总裁": "CEO", "悬疑": "Mystery",
+    "非人类": "Non-Human", "恐怖": "Horror", "异能": "Superpowers", "奇幻": "Fantasy",
+    "系统": "System", "重生": "Rebirth", "末世": "Apocalypse", "都市": "Urban",
+    "热血": "Action", "剧情": "Drama", "萌系": "Cute", "搞笑": "Comedy",
+    "武侠": "Wuxia", "正能量": "Positive Energy",
+    # Other tags series carry
+    "逆袭": "Comeback", "青春": "Youth", "治愈": "Healing", "唯美": "Aesthetic",
+    "古言": "Historical Romance", "原创": "Original", "双男主": "Two Male Leads",
+    "复仇": "Revenge", "游戏": "Game", "幻想": "Fantasy", "动作": "Action",
+    "少年": "Shounen", "少女": "Shoujo", "冒险": "Adventure", "宫斗": "Palace Intrigue",
+    "宅斗": "Household Intrigue", "日常": "Slice of Life", "修仙": "Cultivation",
+    "修真": "Cultivation", "仙侠": "Xianxia", "科幻": "Sci-Fi", "灵异": "Supernatural",
+    "推理": "Detective", "美食": "Cooking", "运动": "Sports", "竞技": "Competition",
+    "职场": "Workplace", "家庭": "Family", "甜宠": "Sweet Romance", "霸总": "CEO",
+    "历史": "Historical", "后宫": "Harem", "魔幻": "Magic", "机甲": "Mecha",
+    "丧尸": "Zombies", "无限流": "Infinite Flow", "种田": "Farming", "爆笑": "Comedy",
+    "励志": "Inspirational", "网游": "Online Game", "豪门": "Wealthy Family",
+    "宫廷": "Palace", "江湖": "Martial World", "神豪": "Tycoon", "兽人": "Beastmen",
+    "战斗": "Battle", "怪物": "Monsters", "魔法": "Magic", "御兽": "Beast Taming",
+}
 
 _CHAPTER_NUMBER_RE = re.compile(r"第\s*(\d+(?:\.\d+)?)\s*[话話]")
 _POSTER_SIZE_RE = re.compile(r"(\.(?:webp|jpe?g|png))-w\d+[^/]*$", re.I)
@@ -266,6 +296,80 @@ class KuaikanScraper:
             scraped_at=datetime.now(timezone.utc),
         )
 
+    # ---------------------------------------------------------- translation
+
+    async def english(self, title: str, tags: List[str]) -> Tuple[Optional[str], List[str]]:
+        """English title (None when translation failed) and English tags."""
+        unknown = [t for t in tags if t not in THEMES_EN]
+        translated: Dict[str, str] = {}
+        name_en: Optional[str] = None
+        translator = get_translator()
+        if translator is None:
+            logger.warning("DEEPL_KEY is not set; Kuaikan titles stay in Chinese")
+        else:
+            try:
+                out = await translator.translate([title] + unknown)
+                name_en = title_case(out[0]) or None
+                translated = {zh: title_case(en) for zh, en in zip(unknown, out[1:])}
+                if unknown:
+                    logger.warning(f"Kuaikan tags not in THEMES_EN, machine-translated: {translated}")
+            except TranslationError as e:
+                logger.error(f"Could not translate kuaikan title {title!r}: {e}")
+        # Tags that only DeepL could do, but failed to, stay in Chinese.
+        genres = _merge_tags([THEMES_EN.get(t) or translated.get(t) or t for t in tags])
+        return name_en, genres
+
+    async def apply_english(self, series: VortexSeries) -> None:
+        """Swap a freshly built series' Chinese text for English, keeping the original.
+
+        If the title cannot be translated it stays Chinese, and
+        translate_stored picks it up again on the next run.
+        """
+        series.name_original = series.name
+        series.genres_original = list(series.genres)
+        name_en, series.genres = await self.english(series.name, series.genres)
+        if name_en:
+            series.name = name_en
+
+    async def translate_stored(self) -> int:
+        """Translate stored series whose title is still Chinese; returns how many.
+
+        Covers series saved before translation existed, and any whose
+        translation failed when they were saved. A translated series has a
+        `name_original` that differs from its `name`, and is left alone.
+        """
+        from starlette.concurrency import run_in_threadpool
+
+        from app.services.firebase import firebase_service
+
+        if get_translator() is None:
+            return 0
+        docs = await run_in_threadpool(
+            firebase_service.list_projected,
+            COLLECTION,
+            ["slug", "name", "name_original", "genres", "genres_original"],
+        )
+        updated = 0
+        for doc in docs:
+            original = doc.get("name_original")
+            if original and doc.get("name") != original:
+                continue
+            title = original or doc.get("name") or ""
+            tags = doc.get("genres_original") or doc.get("genres") or []
+            name_en, genres_en = await self.english(title, tags)
+            if not name_en or not doc.get("slug"):
+                continue
+            await run_in_threadpool(
+                firebase_service.set_document,
+                COLLECTION,
+                doc["slug"],
+                {"name": name_en, "name_original": title, "genres": genres_en, "genres_original": tags},
+                merge=True,
+            )
+            updated += 1
+            logger.info(f"Translated kuaikan {doc['slug']}: {title} -> {name_en}")
+        return updated
+
     # -------------------------------------------------------- orchestration
 
     async def scrape_new_series(
@@ -321,6 +425,7 @@ class KuaikanScraper:
                     result.skipped_slugs.append(slug)
                     continue
                 seen_titles.add(key)
+                await self.apply_english(series)
                 series_list.append(series)
 
         result.duration_seconds = round(time.time() - started, 2)
@@ -342,7 +447,10 @@ class KuaikanScraper:
         from app.services.firebase import firebase_service
 
         existing = await run_in_threadpool(firebase_service.existing_ids, COLLECTION)
-        names = await run_in_threadpool(firebase_service.existing_values, COLLECTION, "name")
+        # Duplicates are judged on the Chinese title, which a stored series
+        # keeps in name_original once its name is English.
+        names = await run_in_threadpool(firebase_service.existing_values, COLLECTION, "name_original")
+        names |= await run_in_threadpool(firebase_service.existing_values, COLLECTION, "name")
         result, new_series = await self.scrape_new_series(
             year=year,
             month=month,
@@ -378,6 +486,13 @@ class KuaikanScraper:
                 logger.info(f"Saved kuaikan series: {series.slug} {series.name}")
             except Exception as e:
                 logger.error(f"Failed to save kuaikan {series.slug}: {e}")
+
+        try:
+            retried = await self.translate_stored()
+            if retried:
+                logger.info(f"Translated {retried} stored kuaikan series still in Chinese")
+        except Exception as e:
+            logger.error(f"Kuaikan translation retry failed: {e}")
 
         self.last_result = result
         self.last_run_at = datetime.now(timezone.utc)

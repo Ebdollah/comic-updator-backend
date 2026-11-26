@@ -24,6 +24,11 @@ class SeriesSummary(BaseModel):
     status: Optional[str] = Field(None, description="Ongoing / Completed / Hiatus")
     genres: List[str] = Field(default_factory=list, description="Genre tags, when the source lists them")
 
+    # Set only for sources whose site is not in English: `name` and `genres`
+    # then hold the English, and these what the site itself prints.
+    name_original: Optional[str] = Field(None, description="Title as the source prints it")
+    genres_original: List[str] = Field(default_factory=list, description="Tags as the source prints them")
+
     total_chapters: int = 0
     first_chapter_released_at: Optional[datetime] = None
     last_updated_at: Optional[datetime] = Field(None, description="Release time of the newest chapter")

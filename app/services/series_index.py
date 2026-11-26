@@ -136,7 +136,12 @@ def query_feed(
             matched = [s for s in matched if month_key(s.get("first_chapter_released_at")) == month]
     needle = q.strip().casefold()
     if needle:
-        matched = [s for s in matched if needle in (s.get("name") or "").casefold()]
+        # Translated titles keep the original too, so either one finds them.
+        matched = [
+            s for s in matched
+            if needle in (s.get("name") or "").casefold()
+            or needle in (s.get("name_original") or "").casefold()
+        ]
 
     matched = sorted(matched, key=SORTS[sort], reverse=sort != "name")
     page = matched[offset : offset + limit]

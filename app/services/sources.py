@@ -106,7 +106,7 @@ SOURCES: Dict[str, Source] = {
         notes=(
             "Chinese series on kuaikanmanhua.com whose chapter 1 released in the target "
             "month. Excluded themes: "
-            + ", ".join(f"{zh} {en}" for zh, en in kuaikan.EXCLUDED_THEMES.items())
+            + ", ".join(kuaikan.THEMES_EN.get(zh, en) for zh, en in kuaikan.EXCLUDED_THEMES.items())
             + "."
         ),
         cover_hosts=("kkmh.com",),
